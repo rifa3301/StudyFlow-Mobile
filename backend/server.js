@@ -5,6 +5,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const createGraphQLHandler = require('./graphql');
 
 const app = express();
 const PORT = 5000;
@@ -17,7 +18,7 @@ const pool = new Pool({
     password: process.env.DB_PASSWORD,
 });
 
-app.use(express.json());
+
 
 // Check JWT configuration
 if (!process.env.JWT_SECRET) {
@@ -25,7 +26,24 @@ if (!process.env.JWT_SECRET) {
     process.exit(1);
 }
 
-// JWT authentication middleware
+
+// ==================================================
+// GRAPHQL API
+// ==================================================
+
+app.all(
+    '/graphql',
+    createGraphQLHandler(pool, process.env.JWT_SECRET)
+);
+
+// Parse JSON bodies for the existing REST endpoints.
+app.use(express.json());
+
+
+// ==================================================
+// AUTHENTICATION MIDDLEWARE
+// ==================================================
+
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -48,14 +66,16 @@ function authenticateToken(req, res, next) {
     });
 }
 
-// Home endpoint
+// ==================================================
+// HOME AND DATABASE HEALTH
+// ==================================================
+
 app.get('/', (req, res) => {
     res.json({
         message: 'StudyFlow Mobile Backend is running!'
     });
 });
 
-// Database health check
 app.get('/api/health/db', async (req, res) => {
     try {
         const result = await pool.query(
@@ -77,7 +97,10 @@ app.get('/api/health/db', async (req, res) => {
     }
 });
 
-// Check username availability
+// ==================================================
+// USERNAME AVAILABILITY
+// ==================================================
+
 app.get('/api/auth/check-username', async (req, res) => {
     try {
         const username = (req.query.username || '').trim();
@@ -107,7 +130,10 @@ app.get('/api/auth/check-username', async (req, res) => {
     }
 });
 
-// Register a new user
+// ==================================================
+// USER REGISTRATION
+// ==================================================
+
 app.post('/api/auth/register', async (req, res) => {
     try {
         const {
@@ -147,7 +173,8 @@ app.post('/api/auth/register', async (req, res) => {
             `INSERT INTO app_users
                 (username, full_name, email, phone, password_hash)
              VALUES ($1, $2, $3, $4, $5)
-             RETURNING user_id, username, full_name, email, phone`,
+             RETURNING user_id, username, full_name, email, phone,
+                       email_verified_at, phone_verified_at`,
             [
                 cleanUsername,
                 cleanName,
@@ -157,9 +184,18 @@ app.post('/api/auth/register', async (req, res) => {
             ]
         );
 
+        const user = result.rows[0];
+
+        const token = jwt.sign(
+            { userId: user.user_id },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
         res.status(201).json({
             message: 'Registration successful!',
-            user: result.rows[0]
+            token: token,
+            user: user
         });
 
     } catch (error) {
@@ -177,7 +213,10 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// Login
+// ==================================================
+// USER LOGIN
+// ==================================================
+
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { identifier, password } = req.body;
@@ -228,7 +267,10 @@ app.post('/api/auth/login', async (req, res) => {
                 user_id: user.user_id,
                 username: user.username,
                 full_name: user.full_name,
-                email: user.email
+                email: user.email,
+                phone: user.phone,
+                email_verified_at: user.email_verified_at,
+                phone_verified_at: user.phone_verified_at
             }
         });
 
@@ -241,7 +283,10 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// Get currently authenticated user
+// ==================================================
+// GET AUTHENTICATED USER
+// ==================================================
+
 app.get('/api/auth/me', authenticateToken, async (req, res) => {
     try {
         const result = await pool.query(
@@ -272,7 +317,10 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
     }
 });
 
-// Generate an email or phone verification OTP
+// ==================================================
+// SEND VERIFICATION OTP
+// ==================================================
+
 app.post('/api/auth/send-otp', authenticateToken, async (req, res) => {
     try {
         const { channel } = req.body;
@@ -317,7 +365,6 @@ app.post('/api/auth/send-otp', authenticateToken, async (req, res) => {
 
         const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
-        // Remove previous unused OTPs for this channel
         await pool.query(
             `DELETE FROM verifications
              WHERE user_id = $1
@@ -360,7 +407,10 @@ app.post('/api/auth/send-otp', authenticateToken, async (req, res) => {
     }
 });
 
-// Verify an email or phone OTP
+// ==================================================
+// VERIFY EMAIL OR PHONE OTP
+// ==================================================
+
 app.post('/api/auth/verify-otp', authenticateToken, async (req, res) => {
     const client = await pool.connect();
 
@@ -484,8 +534,11 @@ app.post('/api/auth/verify-otp', authenticateToken, async (req, res) => {
     }
 });
 
-// Create a new task
-app.post('/api/tasks', async (req, res) => {
+// ==================================================
+// CREATE TASK
+// ==================================================
+
+app.post('/api/tasks', authenticateToken, async (req, res) => {
     try {
         const {
             title,
@@ -513,7 +566,7 @@ app.post('/api/tasks', async (req, res) => {
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING *`,
             [
-                1,
+                req.user.userId,
                 title.trim(),
                 description || null,
                 subject,
@@ -536,8 +589,11 @@ app.post('/api/tasks', async (req, res) => {
     }
 });
 
-// Get tasks with pagination
-app.get('/api/tasks', async (req, res) => {
+// ==================================================
+// GET PAGINATED TASKS
+// ==================================================
+
+app.get('/api/tasks', authenticateToken, async (req, res) => {
     try {
         const page = Math.max(1, parseInt(req.query.page, 10) || 1);
 
@@ -546,11 +602,13 @@ app.get('/api/tasks', async (req, res) => {
 
         const offset = (page - 1) * limit;
 
+        const userId = req.user.userId;
+
         const countResult = await pool.query(
             `SELECT COUNT(*) AS total
              FROM tasks
              WHERE user_id = $1`,
-            [1]
+            [userId]
         );
 
         const totalTasks = parseInt(countResult.rows[0].total, 10);
@@ -562,7 +620,7 @@ app.get('/api/tasks', async (req, res) => {
              WHERE user_id = $1
              ORDER BY task_id DESC
              LIMIT $2 OFFSET $3`,
-            [1, limit, offset]
+            [userId, limit, offset]
         );
 
         res.status(200).json({
@@ -585,7 +643,256 @@ app.get('/api/tasks', async (req, res) => {
     }
 });
 
-// Start server
+// ==================================================
+// CREATE STUDY RESOURCE
+// ==================================================
+
+app.post('/api/resources', authenticateToken, async (req, res) => {
+    try {
+        const {
+            title,
+            description,
+            category,
+            resourceType,
+            resourceUrl,
+            visibility
+        } = req.body;
+
+        if (
+            typeof title !== 'string' ||
+            !title.trim() ||
+            typeof resourceType !== 'string' ||
+            !resourceType.trim() ||
+            typeof resourceUrl !== 'string' ||
+            !resourceUrl.trim()
+        ) {
+            return res.status(400).json({
+                message: 'Title, resource type and URL are required.'
+            });
+        }
+
+        if (title.trim().length > 200) {
+            return res.status(400).json({
+                message: 'Title must not exceed 200 characters.'
+            });
+        }
+
+        if (resourceType.trim().length > 30) {
+            return res.status(400).json({
+                message: 'Resource type must not exceed 30 characters.'
+            });
+        }
+
+        let parsedUrl;
+
+        try {
+            parsedUrl = new URL(resourceUrl.trim());
+        } catch {
+            return res.status(400).json({
+                message: 'Please provide a valid resource URL.'
+            });
+        }
+
+        if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+            return res.status(400).json({
+                message: 'Only HTTP and HTTPS links are supported.'
+            });
+        }
+
+        const resourceVisibility = visibility || 'public';
+
+        if (!['public', 'private'].includes(resourceVisibility)) {
+            return res.status(400).json({
+                message: 'Visibility must be public or private.'
+            });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO resources (
+                user_id,
+                title,
+                description,
+                category,
+                resource_type,
+                resource_url,
+                visibility
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING *`,
+            [
+                req.user.userId,
+                title.trim(),
+                typeof description === 'string'
+                    ? description.trim() || null
+                    : null,
+                typeof category === 'string'
+                    ? category.trim() || null
+                    : null,
+                resourceType.trim(),
+                parsedUrl.toString(),
+                resourceVisibility
+            ]
+        );
+
+        res.status(201).json({
+            message: 'Resource created successfully!',
+            resource: result.rows[0]
+        });
+
+    } catch (error) {
+        console.error('Resource creation error:', error.message);
+
+        res.status(500).json({
+            message: 'Failed to create resource.'
+        });
+    }
+});
+
+// ==================================================
+// GET RESOURCES AND RATING STATISTICS
+// ==================================================
+
+app.get('/api/resources', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT
+                r.resource_id,
+                r.user_id,
+                r.title,
+                r.description,
+                r.category,
+                r.resource_type,
+                r.resource_url,
+                r.visibility,
+                r.created_at,
+
+                COALESCE(
+                    ROUND(AVG(rt.rating_value)::numeric, 2),
+                    0
+                ) AS average_rating,
+
+                COUNT(rt.rating_id)::integer AS rating_count,
+
+                MAX(rt.rating_value) FILTER (
+                    WHERE rt.user_id = $1
+                ) AS user_rating
+
+             FROM resources r
+
+             LEFT JOIN ratings rt
+                ON rt.resource_id = r.resource_id
+
+             WHERE r.visibility = 'public'
+                OR r.user_id = $1
+
+             GROUP BY r.resource_id
+
+             ORDER BY r.created_at DESC`,
+            [req.user.userId]
+        );
+
+        res.status(200).json({
+            message: 'Resources retrieved successfully!',
+            resources: result.rows
+        });
+
+    } catch (error) {
+        console.error('Resource retrieval error:', error.message);
+
+        res.status(500).json({
+            message: 'Failed to retrieve resources.'
+        });
+    }
+});
+
+// ==================================================
+// SUBMIT OR UPDATE RESOURCE RATING
+// ==================================================
+
+app.post(
+    '/api/resources/:resourceId/rating',
+    authenticateToken,
+    async (req, res) => {
+        try {
+            const resourceId = Number(req.params.resourceId);
+            const ratingValue = Number(req.body.rating);
+
+            if (
+                !Number.isSafeInteger(resourceId) ||
+                resourceId <= 0
+            ) {
+                return res.status(400).json({
+                    message: 'Invalid resource ID.'
+                });
+            }
+
+            if (
+                !Number.isInteger(ratingValue) ||
+                ratingValue < 1 ||
+                ratingValue > 5
+            ) {
+                return res.status(400).json({
+                    message: 'Rating must be a whole number from 1 to 5.'
+                });
+            }
+
+            const resource = await pool.query(
+                `SELECT resource_id
+                 FROM resources
+                 WHERE resource_id = $1
+                   AND (
+                       visibility = 'public'
+                       OR user_id = $2
+                   )`,
+                [resourceId, req.user.userId]
+            );
+
+            if (resource.rows.length === 0) {
+                return res.status(404).json({
+                    message: 'Resource not found.'
+                });
+            }
+
+            const result = await pool.query(
+                `INSERT INTO ratings (
+                    resource_id,
+                    user_id,
+                    rating_value
+                )
+                VALUES ($1, $2, $3)
+
+                ON CONFLICT (resource_id, user_id)
+                DO UPDATE SET
+                    rating_value = EXCLUDED.rating_value,
+                    created_at = NOW()
+
+                RETURNING *`,
+                [
+                    resourceId,
+                    req.user.userId,
+                    ratingValue
+                ]
+            );
+
+            res.status(200).json({
+                message: 'Rating saved successfully!',
+                rating: result.rows[0]
+            });
+
+        } catch (error) {
+            console.error('Rating submission error:', error.message);
+
+            res.status(500).json({
+                message: 'Failed to save rating.'
+            });
+        }
+    }
+);
+
+// ==================================================
+// START SERVER
+// ==================================================
+
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`StudyFlow backend running on port ${PORT}`);
 });
