@@ -1,8 +1,8 @@
-
 import 'package:flutter/material.dart';
 
 import 'register_page.dart';
 import 'login_page.dart';
+import 'core/theme/app_theme.dart';
 
 void main() {
   runApp(const MyApp());
@@ -16,10 +16,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'StudyFlow',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        fontFamily: 'Roboto',
-      ),
+      theme: AppTheme.lightTheme,
       home: const WelcomePage(),
     );
   }

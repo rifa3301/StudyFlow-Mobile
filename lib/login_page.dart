@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+
 import 'api_service.dart';
 import 'verification_page.dart';
+import 'dashboard_page.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -28,6 +30,7 @@ class _LoginPageState extends State<LoginPage> {
     });
 
     try {
+      // Step 1: Authenticate the user.
       final result = await ApiService.login(
         identifier: _identifierController.text.trim(),
         password: _passwordController.text,
@@ -35,19 +38,38 @@ class _LoginPageState extends State<LoginPage> {
 
       final token = result['token'] as String;
 
+      // Step 2: Retrieve the latest user information.
       final user = await ApiService.getCurrentUser(token);
 
       if (!mounted) return;
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => VerificationPage(
-            token: token,
-            user: user,
+      // Step 3: Check both verification statuses.
+      final emailVerified = user['email_verified_at'] != null;
+      final phoneVerified = user['phone_verified_at'] != null;
+
+      if (emailVerified && phoneVerified) {
+        // Both contacts are verified. Open the dashboard.
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => DashboardPage(
+              token: token,
+              user: user,
+            ),
           ),
-        ),
-      );
+        );
+      } else {
+        // At least one contact still needs verification.
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => VerificationPage(
+              token: token,
+              user: user,
+            ),
+          ),
+        );
+      }
     } catch (error) {
       if (!mounted) return;
 
@@ -109,6 +131,7 @@ class _LoginPageState extends State<LoginPage> {
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 30),
+
                 TextFormField(
                   controller: _identifierController,
                   decoration: const InputDecoration(
@@ -121,7 +144,9 @@ class _LoginPageState extends State<LoginPage> {
                       ? 'Enter your username or email'
                       : null,
                 ),
+
                 const SizedBox(height: 18),
+
                 TextFormField(
                   controller: _passwordController,
                   obscureText: _obscurePassword,
@@ -147,7 +172,9 @@ class _LoginPageState extends State<LoginPage> {
                       ? 'Enter your password'
                       : null,
                 ),
+
                 const SizedBox(height: 25),
+
                 ElevatedButton(
                   onPressed: _loggingIn ? null : _login,
                   style: ElevatedButton.styleFrom(

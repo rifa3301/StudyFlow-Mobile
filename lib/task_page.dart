@@ -1,8 +1,13 @@
-import 'api_service.dart';
 import 'package:flutter/material.dart';
+import 'api_service.dart';
 
 class TaskPage extends StatefulWidget {
-  const TaskPage({super.key});
+  final String token;
+
+  const TaskPage({
+    super.key,
+    required this.token,
+  });
 
   @override
   State<TaskPage> createState() => _TaskPageState();
@@ -13,10 +18,13 @@ class _TaskPageState extends State<TaskPage> {
 
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
+  final _dateController = TextEditingController();
 
   String? _selectedSubject;
   String? _selectedPriority;
   DateTime? _selectedDate;
+
+  bool _isSubmitting = false;
 
   final List<String> _subjects = [
     'Programming',
@@ -36,7 +44,7 @@ class _TaskPageState extends State<TaskPage> {
   Future<void> _selectDate() async {
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.now(),
+      initialDate: _selectedDate ?? DateTime.now(),
       firstDate: DateTime.now(),
       lastDate: DateTime(2035),
     );
@@ -44,6 +52,7 @@ class _TaskPageState extends State<TaskPage> {
     if (picked != null) {
       setState(() {
         _selectedDate = picked;
+        _dateController.text = _formatDate(picked);
       });
     }
   }
@@ -53,6 +62,8 @@ class _TaskPageState extends State<TaskPage> {
   }
 
   Future<void> _submitForm() async {
+    if (_isSubmitting) return;
+
     if (!_formKey.currentState!.validate()) {
       return;
     }
@@ -72,8 +83,13 @@ class _TaskPageState extends State<TaskPage> {
 
     final dueDate = selectedDateTime.toUtc().toIso8601String();
 
+    setState(() {
+      _isSubmitting = true;
+    });
+
     try {
       final result = await ApiService.createTask(
+        token: widget.token,
         title: title,
         description: description,
         subject: subject,
@@ -114,6 +130,7 @@ class _TaskPageState extends State<TaskPage> {
 
                   _titleController.clear();
                   _descriptionController.clear();
+                  _dateController.clear();
 
                   setState(() {
                     _selectedSubject = null;
@@ -135,6 +152,12 @@ class _TaskPageState extends State<TaskPage> {
           content: Text('Failed to create task: $error'),
         ),
       );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
     }
   }
 
@@ -142,6 +165,7 @@ class _TaskPageState extends State<TaskPage> {
   void dispose() {
     _titleController.dispose();
     _descriptionController.dispose();
+    _dateController.dispose();
     super.dispose();
   }
 
@@ -153,17 +177,13 @@ class _TaskPageState extends State<TaskPage> {
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
       ),
-
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
-
         child: Form(
           key: _formKey,
-
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-
               const Text(
                 'Add a New Task',
                 style: TextStyle(
@@ -280,17 +300,13 @@ class _TaskPageState extends State<TaskPage> {
               // Due date picker
               TextFormField(
                 readOnly: true,
-                decoration: InputDecoration(
+                controller: _dateController,
+                decoration: const InputDecoration(
                   labelText: 'Due Date',
                   hintText: 'Select a due date',
-                  prefixIcon: const Icon(Icons.calendar_today),
-                  suffixIcon: const Icon(Icons.arrow_drop_down),
-                  border: const OutlineInputBorder(),
-                ),
-                controller: TextEditingController(
-                  text: _selectedDate == null
-                      ? ''
-                      : _formatDate(_selectedDate!),
+                  prefixIcon: Icon(Icons.calendar_today),
+                  suffixIcon: Icon(Icons.arrow_drop_down),
+                  border: OutlineInputBorder(),
                 ),
                 onTap: _selectDate,
                 validator: (value) {
@@ -305,9 +321,20 @@ class _TaskPageState extends State<TaskPage> {
 
               // Submit button
               ElevatedButton.icon(
-                onPressed: _submitForm,
-                icon: const Icon(Icons.add),
-                label: const Text('Add Task'),
+                onPressed: _isSubmitting ? null : _submitForm,
+                icon: _isSubmitting
+                    ? const SizedBox(
+                  height: 18,
+                  width: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+                    : const Icon(Icons.add),
+                label: Text(
+                  _isSubmitting ? 'Creating Task...' : 'Add Task',
+                ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.blue,
                   foregroundColor: Colors.white,

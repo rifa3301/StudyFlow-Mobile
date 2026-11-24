@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+
 import 'api_service.dart';
+import 'dashboard_page.dart';
 
 class VerificationPage extends StatefulWidget {
   final String token;
@@ -27,17 +29,16 @@ class _VerificationPageState extends State<VerificationPage> {
   late bool _emailVerified;
   late bool _phoneVerified;
 
+  late Map<String, dynamic> _currentUser;
+
   @override
   void initState() {
     super.initState();
 
-    print('USER DATA: ${widget.user}');
+    _currentUser = Map<String, dynamic>.from(widget.user);
 
-    _emailVerified = widget.user['email_verified_at'] != null;
-    _phoneVerified = widget.user['phone_verified_at'] != null;
-
-    print('EMAIL VERIFIED: $_emailVerified');
-    print('PHONE VERIFIED: $_phoneVerified');
+    _emailVerified = _currentUser['email_verified_at'] != null;
+    _phoneVerified = _currentUser['phone_verified_at'] != null;
   }
 
   Future<void> _sendOtp(String channel) async {
@@ -59,7 +60,6 @@ class _VerificationPageState extends State<VerificationPage> {
 
       if (!mounted) return;
 
-      // Demo mode: the API returns the OTP instead of sending it.
       showDialog(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -128,14 +128,19 @@ class _VerificationPageState extends State<VerificationPage> {
         otp: otp,
       );
 
+      final updatedUser = await ApiService.getCurrentUser(widget.token);
+
       if (!mounted) return;
 
       setState(() {
+        _currentUser = Map<String, dynamic>.from(updatedUser);
+
+        _emailVerified = _currentUser['email_verified_at'] != null;
+        _phoneVerified = _currentUser['phone_verified_at'] != null;
+
         if (isEmail) {
-          _emailVerified = true;
           _emailOtpController.clear();
         } else {
-          _phoneVerified = true;
           _phoneOtpController.clear();
         }
       });
@@ -168,6 +173,22 @@ class _VerificationPageState extends State<VerificationPage> {
         });
       }
     }
+  }
+
+  void _continueAfterVerification() {
+    if (!_emailVerified || !_phoneVerified) {
+      return;
+    }
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DashboardPage(
+          token: widget.token,
+          user: _currentUser,
+        ),
+      ),
+    );
   }
 
   Widget _buildVerificationSection({
@@ -256,6 +277,8 @@ class _VerificationPageState extends State<VerificationPage> {
 
   @override
   Widget build(BuildContext context) {
+    final bothVerified = _emailVerified && _phoneVerified;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Contact Verification'),
@@ -283,14 +306,14 @@ class _VerificationPageState extends State<VerificationPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Welcome, ${widget.user['full_name']}!',
+              'Welcome, ${_currentUser['full_name']}!',
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 24),
 
             _buildVerificationSection(
               title: 'Email Verification',
-              destination: widget.user['email'] ?? '',
+              destination: _currentUser['email']?.toString() ?? '',
               verified: _emailVerified,
               sending: _sendingEmail,
               verifying: _verifyingEmail,
@@ -301,7 +324,7 @@ class _VerificationPageState extends State<VerificationPage> {
 
             _buildVerificationSection(
               title: 'Phone Verification',
-              destination: widget.user['phone'] ?? '',
+              destination: _currentUser['phone']?.toString() ?? '',
               verified: _phoneVerified,
               sending: _sendingPhone,
               verifying: _verifyingPhone,
@@ -309,6 +332,38 @@ class _VerificationPageState extends State<VerificationPage> {
               onSend: () => _sendOtp('phone'),
               onVerify: () => _verifyOtp('phone'),
             ),
+
+            if (bothVerified) ...[
+              const SizedBox(height: 8),
+              const Icon(
+                Icons.check_circle,
+                color: Colors.green,
+                size: 45,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'All contact details verified!',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.green,
+                ),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: _continueAfterVerification,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                ),
+                child: const Text(
+                  'Continue',
+                  style: TextStyle(fontSize: 16),
+                ),
+              ),
+            ],
           ],
         ),
       ),

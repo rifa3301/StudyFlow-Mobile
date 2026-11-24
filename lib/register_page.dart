@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'api_service.dart';
+import 'verification_page.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -102,6 +103,10 @@ class _RegisterPageState extends State<RegisterPage> {
 
       if (!mounted) return;
 
+      final token = result['token'] as String;
+
+      final user = Map<String, dynamic>.from(result['user']);
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(result['message']),
@@ -109,7 +114,15 @@ class _RegisterPageState extends State<RegisterPage> {
         ),
       );
 
-      Navigator.pop(context);
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => VerificationPage(
+            token: token,
+            user: user,
+          ),
+        ),
+      );
     } catch (error) {
       if (!mounted) return;
 
