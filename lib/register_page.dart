@@ -23,26 +23,44 @@ class _RegisterPageState extends State<RegisterPage> {
 
   Timer? _debounce;
 
+  // Identifies the latest username-checking request.
+  int _usernameCheckVersion = 0;
+
   bool _checkingUsername = false;
   bool? _usernameAvailable;
   String _usernameMessage = '';
   bool _registering = false;
   bool _obscurePassword = true;
 
+  // ==================================================
+  // USERNAME AVAILABILITY CHECK
+  // ==================================================
+
   void _checkUsername(String username) {
     _debounce?.cancel();
 
+    // Invalidate all previous requests.
+    final currentVersion = ++_usernameCheckVersion;
+
     setState(() {
+      _checkingUsername = false;
       _usernameAvailable = null;
       _usernameMessage = '';
     });
 
-    if (username.trim().length < 3) {
+    final cleanUsername = username.trim();
+
+    // Do not check invalid or incomplete usernames.
+    if (cleanUsername.length < 3 ||
+        !RegExp(r'^[a-zA-Z0-9_]{3,50}$').hasMatch(cleanUsername)) {
       return;
     }
 
+    // Wait 500 milliseconds after the user stops typing.
     _debounce = Timer(const Duration(milliseconds: 500), () async {
-      if (!mounted) return;
+      if (!mounted || currentVersion != _usernameCheckVersion) {
+        return;
+      }
 
       setState(() {
         _checkingUsername = true;
@@ -50,9 +68,12 @@ class _RegisterPageState extends State<RegisterPage> {
 
       try {
         final available =
-        await ApiService.checkUsername(username.trim());
+        await ApiService.checkUsername(cleanUsername);
 
-        if (!mounted || _usernameController.text.trim() != username.trim()) {
+        // Ignore outdated responses.
+        if (!mounted ||
+            currentVersion != _usernameCheckVersion ||
+            _usernameController.text.trim() != cleanUsername) {
           return;
         }
 
@@ -63,7 +84,10 @@ class _RegisterPageState extends State<RegisterPage> {
           _checkingUsername = false;
         });
       } catch (error) {
-        if (!mounted) return;
+        // Ignore errors from outdated requests.
+        if (!mounted || currentVersion != _usernameCheckVersion) {
+          return;
+        }
 
         setState(() {
           _checkingUsername = false;
@@ -73,6 +97,10 @@ class _RegisterPageState extends State<RegisterPage> {
       }
     });
   }
+
+  // ==================================================
+  // USER REGISTRATION
+  // ==================================================
 
   Future<void> _register() async {
     if (!_formKey.currentState!.validate()) {
@@ -141,17 +169,30 @@ class _RegisterPageState extends State<RegisterPage> {
     }
   }
 
+  // ==================================================
+  // DISPOSE
+  // ==================================================
+
   @override
   void dispose() {
+    // Invalidate any pending username-checking request.
+    _usernameCheckVersion++;
+
     _debounce?.cancel();
+
     _nameController.dispose();
     _usernameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
+
     super.dispose();
   }
+
+  // ==================================================
+  // BUILD
+  // ==================================================
 
   @override
   Widget build(BuildContext context) {
@@ -186,6 +227,8 @@ class _RegisterPageState extends State<RegisterPage> {
 
               const SizedBox(height: 25),
 
+              // FULL NAME
+
               TextFormField(
                 controller: _nameController,
                 decoration: const InputDecoration(
@@ -200,6 +243,8 @@ class _RegisterPageState extends State<RegisterPage> {
               ),
 
               const SizedBox(height: 16),
+
+              // USERNAME
 
               TextFormField(
                 controller: _usernameController,
@@ -234,10 +279,12 @@ class _RegisterPageState extends State<RegisterPage> {
                   if (value == null || value.trim().length < 3) {
                     return 'Username must contain at least 3 characters';
                   }
+
                   if (!RegExp(r'^[a-zA-Z0-9_]{3,50}$')
                       .hasMatch(value.trim())) {
                     return 'Use only letters, numbers, and underscores';
                   }
+
                   return null;
                 },
               ),
@@ -259,6 +306,8 @@ class _RegisterPageState extends State<RegisterPage> {
 
               const SizedBox(height: 16),
 
+              // EMAIL
+
               TextFormField(
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
@@ -277,6 +326,8 @@ class _RegisterPageState extends State<RegisterPage> {
 
               const SizedBox(height: 16),
 
+              // PHONE NUMBER
+
               TextFormField(
                 controller: _phoneController,
                 keyboardType: TextInputType.phone,
@@ -292,6 +343,8 @@ class _RegisterPageState extends State<RegisterPage> {
               ),
 
               const SizedBox(height: 16),
+
+              // PASSWORD
 
               TextFormField(
                 controller: _passwordController,
@@ -321,6 +374,8 @@ class _RegisterPageState extends State<RegisterPage> {
 
               const SizedBox(height: 16),
 
+              // CONFIRM PASSWORD
+
               TextFormField(
                 controller: _confirmPasswordController,
                 obscureText: true,
@@ -336,6 +391,8 @@ class _RegisterPageState extends State<RegisterPage> {
               ),
 
               const SizedBox(height: 25),
+
+              // REGISTER BUTTON
 
               ElevatedButton(
                 onPressed: _registering ? null : _register,

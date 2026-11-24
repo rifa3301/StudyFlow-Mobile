@@ -21,6 +21,9 @@ class _TaskListPageState extends State<TaskListPage> {
 
   late Future<Map<String, dynamic>> _tasksFuture;
 
+  // Tracks tasks currently being updated or deleted.
+  final Set<int> _busyTaskIds = {};
+
   @override
   void initState() {
     super.initState();
@@ -46,6 +49,154 @@ class _TaskListPageState extends State<TaskListPage> {
       currentPage = page;
       _loadTasks();
     });
+  }
+
+  int? _getTaskId(Map<String, dynamic> task) {
+    return int.tryParse(task['task_id']?.toString() ?? '');
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+  }
+
+  Future<void> _updateTaskStatus(
+      Map<String, dynamic> task,
+      bool completed,
+      ) async {
+    final taskId = _getTaskId(task);
+
+    if (taskId == null) {
+      _showMessage('Could not identify this task.');
+      return;
+    }
+
+    if (_busyTaskIds.contains(taskId)) return;
+
+    setState(() {
+      _busyTaskIds.add(taskId);
+    });
+
+    try {
+      await ApiService.updateTaskStatus(
+        token: widget.token,
+        taskId: taskId,
+        status: completed ? 'completed' : 'pending',
+      );
+
+      if (!mounted) return;
+
+      _showMessage(
+        completed
+            ? 'Task marked as completed!'
+            : 'Task marked as pending.',
+      );
+
+      setState(() {
+        _busyTaskIds.remove(taskId);
+        _loadTasks();
+      });
+    } catch (error) {
+      if (!mounted) return;
+
+      setState(() {
+        _busyTaskIds.remove(taskId);
+      });
+
+      _showMessage('Could not update task: $error');
+    }
+  }
+
+  Future<void> _deleteTask(Map<String, dynamic> task) async {
+    final taskId = _getTaskId(task);
+
+    if (taskId == null) {
+      _showMessage('Could not identify this task.');
+      return;
+    }
+
+    final title = task['title']?.toString() ?? 'this task';
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Delete task?'),
+          content: Text(
+            'Are you sure you want to delete "$title"? '
+                'This action cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, false);
+              },
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.error,
+              ),
+              onPressed: () {
+                Navigator.pop(dialogContext, true);
+              },
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    if (_busyTaskIds.contains(taskId)) return;
+
+    setState(() {
+      _busyTaskIds.add(taskId);
+    });
+
+    try {
+      await ApiService.deleteTask(
+        token: widget.token,
+        taskId: taskId,
+      );
+
+      if (!mounted) return;
+
+      _showMessage('Task deleted successfully!');
+
+      // Reload the current page.
+      setState(() {
+        _busyTaskIds.remove(taskId);
+        _loadTasks();
+      });
+
+      final updatedData = await _tasksFuture;
+
+      final updatedTasks =
+      List<dynamic>.from(updatedData['tasks'] ?? []);
+
+      // If the current page became empty, go back one page.
+      if (updatedTasks.isEmpty && currentPage > 1 && mounted) {
+        setState(() {
+          currentPage--;
+          _loadTasks();
+        });
+      }
+    } catch (error) {
+      if (!mounted) return;
+
+      setState(() {
+        _busyTaskIds.remove(taskId);
+      });
+
+      _showMessage('Could not delete task: $error');
+    }
   }
 
   String _formatDate(dynamic value) {
@@ -80,11 +231,16 @@ class _TaskListPageState extends State<TaskListPage> {
   }
 
   Widget _buildTaskCard(Map<String, dynamic> task) {
+    final taskId = _getTaskId(task);
+
     final title = task['title']?.toString() ?? 'Untitled Task';
     final subject = task['subject']?.toString() ?? 'N/A';
     final priority = task['priority']?.toString() ?? 'N/A';
     final status = task['status']?.toString() ?? 'pending';
     final description = task['description']?.toString() ?? '';
+
+    final isCompleted = status.toLowerCase() == 'completed';
+    final isBusy = taskId != null && _busyTaskIds.contains(taskId);
 
     final priorityColor = _priorityColor(priority);
 
@@ -107,10 +263,13 @@ class _TaskListPageState extends State<TaskListPage> {
                 Expanded(
                   child: Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
                       color: AppColors.textPrimary,
+                      decoration: isCompleted
+                          ? TextDecoration.lineThrough
+                          : TextDecoration.none,
                     ),
                   ),
                 ),
@@ -146,13 +305,6 @@ class _TaskListPageState extends State<TaskListPage> {
             const SizedBox(height: 8),
 
             _buildDetailRow(
-              Icons.flag_outlined,
-              'Status: $status',
-            ),
-
-            const SizedBox(height: 8),
-
-            _buildDetailRow(
               Icons.calendar_today_outlined,
               'Due: ${_formatDate(task['due_date'])}',
             ),
@@ -167,6 +319,61 @@ class _TaskListPageState extends State<TaskListPage> {
                 ),
               ),
             ],
+
+            const Divider(height: 24),
+
+            Row(
+              children: [
+                Expanded(
+                  child: Row(
+                    children: [
+                      if (isBusy)
+                        const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                          ),
+                        )
+                      else
+                        Checkbox(
+                          value: isCompleted,
+                          activeColor: AppColors.primary,
+                          onChanged: taskId == null
+                              ? null
+                              : (value) {
+                            _updateTaskStatus(
+                              task,
+                              value ?? false,
+                            );
+                          },
+                        ),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          isCompleted ? 'Completed' : 'Mark as complete',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: isCompleted
+                                ? AppColors.success
+                                : AppColors.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  onPressed: isBusy
+                      ? null
+                      : () => _deleteTask(task),
+                  icon: const Icon(Icons.delete_outline),
+                  color: AppColors.error,
+                  tooltip: 'Delete task',
+                ),
+              ],
+            ),
           ],
         ),
       ),

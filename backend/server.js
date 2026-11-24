@@ -18,14 +18,11 @@ const pool = new Pool({
     password: process.env.DB_PASSWORD,
 });
 
-
-
 // Check JWT configuration
 if (!process.env.JWT_SECRET) {
     console.error('JWT_SECRET is missing from .env');
     process.exit(1);
 }
-
 
 // ==================================================
 // GRAPHQL API
@@ -38,7 +35,6 @@ app.all(
 
 // Parse JSON bodies for the existing REST endpoints.
 app.use(express.json());
-
 
 // ==================================================
 // AUTHENTICATION MIDDLEWARE
@@ -331,8 +327,23 @@ app.post('/api/auth/send-otp', authenticateToken, async (req, res) => {
             });
         }
 
+        if (channel === 'email') {
+            return res.status(501).json({
+                message: 'Email delivery is not configured yet.'
+            });
+        }
+
+        if (
+            !process.env.SENDMYSMS_USERNAME ||
+            !process.env.SENDMYSMS_API_KEY
+        ) {
+            return res.status(500).json({
+                message: 'SMS service is not configured.'
+            });
+        }
+
         const userResult = await pool.query(
-            `SELECT email, phone, email_verified_at, phone_verified_at
+            `SELECT phone, phone_verified_at
              FROM app_users
              WHERE user_id = $1`,
             [req.user.userId]
@@ -346,16 +357,55 @@ app.post('/api/auth/send-otp', authenticateToken, async (req, res) => {
 
         const user = userResult.rows[0];
 
-        const verifiedAt = channel === 'email'
-            ? user.email_verified_at
-            : user.phone_verified_at;
-
-        if (verifiedAt) {
+        if (user.phone_verified_at) {
             return res.status(400).json({
-                message: `${channel} is already verified.`
+                message: 'Phone number is already verified.'
             });
         }
 
+        // Normalize the Bangladesh phone number.
+        const digits = user.phone.replace(/\D/g, '');
+
+        let phoneNumber = digits;
+
+        if (digits.startsWith('880')) {
+            phoneNumber = '0' + digits.slice(3);
+        }
+
+        if (!/^01[3-9]\d{8}$/.test(phoneNumber)) {
+            return res.status(400).json({
+                message: 'Please use a valid Bangladesh mobile number.'
+            });
+        }
+
+        // Prevent repeated SMS requests within 60 seconds.
+        const cooldownResult = await pool.query(
+            `SELECT sent_at
+             FROM verifications
+             WHERE user_id = $1
+               AND channel = 'phone'
+             ORDER BY sent_at DESC
+             LIMIT 1`,
+            [req.user.userId]
+        );
+
+        if (cooldownResult.rows.length > 0) {
+            const lastSentAt = new Date(
+                cooldownResult.rows[0].sent_at
+            );
+
+            const elapsedSeconds =
+                (Date.now() - lastSentAt.getTime()) / 1000;
+
+            if (elapsedSeconds < 60) {
+                return res.status(429).json({
+                    message: 'Please wait before requesting another OTP.',
+                    retryAfter: Math.ceil(60 - elapsedSeconds)
+                });
+            }
+        }
+
+        // Generate a six-digit OTP.
         const otp = crypto.randomInt(100000, 1000000).toString();
 
         const codeHash = crypto
@@ -365,44 +415,94 @@ app.post('/api/auth/send-otp', authenticateToken, async (req, res) => {
 
         const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
-        await pool.query(
-            `DELETE FROM verifications
-             WHERE user_id = $1
-               AND channel = $2
-               AND verified_at IS NULL`,
-            [req.user.userId, channel]
-        );
-
-        await pool.query(
+        // Save the new OTP before sending it.
+        const insertResult = await pool.query(
             `INSERT INTO verifications
                 (user_id, channel, code_hash, expires_at)
-             VALUES ($1, $2, $3, $4)`,
+             VALUES ($1, 'phone', $2, $3)
+             RETURNING verification_id`,
             [
                 req.user.userId,
-                channel,
                 codeHash,
                 expiresAt
             ]
         );
 
-        const destination = channel === 'email'
-            ? user.email
-            : user.phone;
+        const verificationId =
+            insertResult.rows[0].verification_id;
 
-        res.json({
-            message: `OTP generated for ${channel} verification.`,
-            channel: channel,
-            destination: destination,
-            otp: otp,
-            expiresIn: 300,
-            note: 'Demo mode: OTP is displayed by the API and is not sent through email or SMS.'
+        try {
+            const message =
+                `Your StudyFlow verification code is ${otp}. ` +
+                'It expires in 5 minutes. Do not share it.';
+
+            const params = new URLSearchParams({
+                user: process.env.SENDMYSMS_USERNAME,
+                key: process.env.SENDMYSMS_API_KEY,
+                to: phoneNumber,
+                msg: message
+            });
+
+            const smsResponse = await fetch(
+                'https://sendmysms.net/api.php',
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type':
+                            'application/x-www-form-urlencoded'
+                    },
+                    body: params.toString(),
+                    signal: AbortSignal.timeout(15000)
+                }
+            );
+
+            const smsData = await smsResponse.json();
+
+            if (!smsResponse.ok || smsData.status !== 'OK') {
+                throw new Error(
+                    smsData.response || 'SMS provider rejected the request.'
+                );
+            }
+
+        } catch (smsError) {
+            // Remove only the newly created OTP.
+            await pool.query(
+                `DELETE FROM verifications
+                 WHERE verification_id = $1`,
+                [verificationId]
+            );
+
+            console.error(
+                'SMS delivery request failed:',
+                smsError.message
+            );
+
+            return res.status(502).json({
+                message: 'Could not send SMS. Please try again later.'
+            });
+        }
+
+        // Invalidate older pending OTPs only after provider acceptance.
+        await pool.query(
+            `DELETE FROM verifications
+             WHERE user_id = $1
+               AND channel = 'phone'
+               AND verification_id <> $2
+               AND verified_at IS NULL`,
+            [req.user.userId, verificationId]
+        );
+
+        return res.json({
+            message: 'Verification code sent successfully.',
+            channel: 'phone',
+            expiresIn: 300
         });
 
     } catch (error) {
-        console.error('OTP generation error:', error.message);
+        console.error('OTP sending error:', error.message);
 
-        res.status(500).json({
-            message: 'Could not generate verification OTP.'
+        return res.status(500).json({
+            message: 'Could not send verification code.'
         });
     }
 });
@@ -432,7 +532,7 @@ app.post('/api/auth/verify-otp', authenticateToken, async (req, res) => {
         await client.query('BEGIN');
 
         const verificationResult = await client.query(
-            `SELECT verification_id, code_hash, expires_at
+            `SELECT verification_id, code_hash, expires_at, attempt_count
              FROM verifications
              WHERE user_id = $1
                AND channel = $2
@@ -447,11 +547,25 @@ app.post('/api/auth/verify-otp', authenticateToken, async (req, res) => {
             await client.query('ROLLBACK');
 
             return res.status(400).json({
-                message: 'No pending OTP found. Please generate a new OTP.'
+                message: 'No pending OTP found. Please request a new one.'
             });
         }
 
         const verification = verificationResult.rows[0];
+
+        if (verification.attempt_count >= 5) {
+            await client.query(
+                `DELETE FROM verifications
+                 WHERE verification_id = $1`,
+                [verification.verification_id]
+            );
+
+            await client.query('COMMIT');
+
+            return res.status(429).json({
+                message: 'Too many incorrect attempts. Please request a new OTP.'
+            });
+        }
 
         if (new Date(verification.expires_at) < new Date()) {
             await client.query(
@@ -463,7 +577,7 @@ app.post('/api/auth/verify-otp', authenticateToken, async (req, res) => {
             await client.query('COMMIT');
 
             return res.status(400).json({
-                message: 'OTP has expired. Please generate a new OTP.'
+                message: 'OTP has expired. Please request a new OTP.'
             });
         }
 
@@ -484,13 +598,24 @@ app.post('/api/auth/verify-otp', authenticateToken, async (req, res) => {
 
         const matches =
             storedHash.length === submittedHashBuffer.length &&
-            crypto.timingSafeEqual(storedHash, submittedHashBuffer);
+            crypto.timingSafeEqual(
+                storedHash,
+                submittedHashBuffer
+            );
 
         if (!matches) {
-            await client.query('ROLLBACK');
+            await client.query(
+                `UPDATE verifications
+                 SET attempt_count = attempt_count + 1
+                 WHERE verification_id = $1`,
+                [verification.verification_id]
+            );
+
+            await client.query('COMMIT');
 
             return res.status(400).json({
-                message: 'Incorrect OTP. Please try again.'
+                message: 'Incorrect OTP. Please try again.',
+                attemptsRemaining: 4 - verification.attempt_count
             });
         }
 
@@ -514,7 +639,7 @@ app.post('/api/auth/verify-otp', authenticateToken, async (req, res) => {
 
         await client.query('COMMIT');
 
-        res.json({
+        return res.json({
             message: `${channel} verified successfully!`,
             channel: channel,
             verified: true
@@ -525,7 +650,7 @@ app.post('/api/auth/verify-otp', authenticateToken, async (req, res) => {
 
         console.error('OTP verification error:', error.message);
 
-        res.status(500).json({
+        return res.status(500).json({
             message: 'Could not verify OTP.'
         });
 
@@ -585,6 +710,111 @@ app.post('/api/tasks', authenticateToken, async (req, res) => {
 
         res.status(500).json({
             message: 'Failed to create task.'
+        });
+    }
+});
+
+// ==================================================
+// UPDATE TASK STATUS
+// ==================================================
+
+app.patch('/api/tasks/:taskId', authenticateToken, async (req, res) => {
+    try {
+        const taskId = Number(req.params.taskId);
+        const { status } = req.body;
+
+        if (
+            !Number.isSafeInteger(taskId) ||
+            taskId <= 0
+        ) {
+            return res.status(400).json({
+                message: 'Invalid task ID.'
+            });
+        }
+
+        if (!['pending', 'completed'].includes(status)) {
+            return res.status(400).json({
+                message: 'Status must be pending or completed.'
+            });
+        }
+
+        const result = await pool.query(
+            `UPDATE tasks
+             SET status = $1
+             WHERE task_id = $2
+               AND user_id = $3
+             RETURNING *`,
+            [
+                status,
+                taskId,
+                req.user.userId
+            ]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                message: 'Task not found.'
+            });
+        }
+
+        res.status(200).json({
+            message: 'Task status updated successfully!',
+            task: result.rows[0]
+        });
+
+    } catch (error) {
+        console.error('Task update error:', error.message);
+
+        res.status(500).json({
+            message: 'Failed to update task status.'
+        });
+    }
+});
+
+// ==================================================
+// DELETE TASK
+// ==================================================
+
+app.delete('/api/tasks/:taskId', authenticateToken, async (req, res) => {
+    try {
+        const taskId = Number(req.params.taskId);
+
+        if (
+            !Number.isSafeInteger(taskId) ||
+            taskId <= 0
+        ) {
+            return res.status(400).json({
+                message: 'Invalid task ID.'
+            });
+        }
+
+        const result = await pool.query(
+            `DELETE FROM tasks
+             WHERE task_id = $1
+               AND user_id = $2
+             RETURNING task_id`,
+            [
+                taskId,
+                req.user.userId
+            ]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                message: 'Task not found.'
+            });
+        }
+
+        res.status(200).json({
+            message: 'Task deleted successfully!',
+            taskId: result.rows[0].task_id
+        });
+
+    } catch (error) {
+        console.error('Task deletion error:', error.message);
+
+        res.status(500).json({
+            message: 'Failed to delete task.'
         });
     }
 });

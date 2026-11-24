@@ -60,29 +60,27 @@ class _VerificationPageState extends State<VerificationPage> {
 
       if (!mounted) return;
 
-      showDialog(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Demo OTP Generated'),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
           content: Text(
-            'Your ${isEmail ? 'email' : 'phone'} OTP is:\n\n'
-                '${result['otp']}\n\n'
-                'In this demo, the OTP is displayed instead of being '
-                'sent through email or SMS.',
+            result['message'] ??
+                'Verification request accepted. Please check your inbox.',
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('OK'),
-            ),
-          ],
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 4),
         ),
       );
     } catch (error) {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.toString())),
+        SnackBar(
+          content: Text(
+            error.toString().replaceFirst('Exception: ', ''),
+          ),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
+        ),
       );
     } finally {
       if (mounted) {

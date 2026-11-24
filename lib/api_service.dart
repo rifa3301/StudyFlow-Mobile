@@ -52,6 +52,65 @@ class ApiService {
     }
   }
 
+  // Update task status (REST PATCH)
+  static Future<Map<String, dynamic>> updateTaskStatus({
+    required String token,
+    required int taskId,
+    required String status,
+  }) async {
+    if (!['pending', 'completed'].contains(status)) {
+      throw Exception('Invalid task status');
+    }
+
+    final url = Uri.parse('$baseUrl/api/tasks/$taskId');
+
+    final response = await http.patch(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+      body: jsonEncode({
+        'status': status,
+      }),
+    );
+
+    final data = jsonDecode(response.body);
+
+    if (response.statusCode == 200) {
+      return Map<String, dynamic>.from(data);
+    } else {
+      throw Exception(
+        data['message'] ?? 'Failed to update task status',
+      );
+    }
+  }
+
+  // Delete a task (REST DELETE)
+  static Future<Map<String, dynamic>> deleteTask({
+    required String token,
+    required int taskId,
+  }) async {
+    final url = Uri.parse('$baseUrl/api/tasks/$taskId');
+
+    final response = await http.delete(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    final data = jsonDecode(response.body);
+
+    if (response.statusCode == 200) {
+      return Map<String, dynamic>.from(data);
+    } else {
+      throw Exception(
+        data['message'] ?? 'Failed to delete task',
+      );
+    }
+  }
+
   // Get paginated tasks for the authenticated user (REST)
   // Retained for other screens that still use REST.
   static Future<Map<String, dynamic>> getTasks({
